@@ -1,0 +1,26 @@
+[package]
+name = "rust_app"
+version = "0.1.0"
+authors = ["Jesse Millwood <jesse.millwood@dornerworks.com>"]
+edition = "2018"
+# build = "build.rs"
+
+[lib]
+crate-type=['staticlib']
+
+[profile.dev]
+panic = "abort"
+
+[profile.release]
+panic = "abort"
+
+# [dependencies]
+# panic-abort = "0.3.1"
+
+# [build-dependencies]
+# bindgen = "0.51"
+
+# [target.aarch64-unknown-linux-gnu]
+# linker = "aarch64-unknown-linux-gnu-ld"
+# as     = "aarch64-unknown-linux-gnu-as"
+# runner = "aarch64-unknown-linux-gnu-gcc"
