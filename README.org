@@ -1,0 +1,233 @@
+#+TITLE: Strengthen Your seL4 Userspace Code with Rust
+#+AUTHOR: Jesse Millwood
+#+EMAIL: jesse.millwood@dornerworks.com
+#+OPTIONS: toc:nil
+
+The Following was posted on the DornerWorks blog at [[https://dornerworks.com/blog/sel4-userspace-rust][https://dornerworks.com/blog/sel4-userspace-rust]].
+It is included here as a README.
+
+The Rust programming language and the seL4 microkernel maintain strong focuses on both memory safety
+and performance, making the two great compliments of each other. The formal story surrounding Rust
+has not reached a level of maturity that would enable it to be a viable option for the seL4 kernel
+space code, which is largely modeled in a higher level specification language and/or follows a
+subset of C that Data61 has modeled. However, the minimal runtime and ability to compile to object
+code makes it a natural fit in userspace. DornerWorks, as part of it's continuing efforts to
+increase seL4 adoption, have done some preliminary experiments using Rust in the seL4 userspace.
+
+Combining userspace programs written in Rust with the seL4 kernel helps to eliminate bugs from
+userspace down through the kernel.  The formal proof of seL4 eliminates entire classes of bugs in
+the kernel, while higher level language constructs of Rust, such as the strong type system, also
+eliminate large swaths of bugs[fn:1].  This blog also focuses on integrating Rust into the Userspace
+but not wholesale replacing it like the others do.
+
+This is not the first attempt to use Rust in the seL4 userspace. Other notable efforts to combine
+Rust and seL4 include:
+- [[https://robigalia.org/][Robigalia]]
+- [[https://github.com/PolySync/cargo-fel4][fel4]]
+
+These, however use the Rust Cargo tool to run the build process. This means that the rootserver is
+written in Rust and is the entry point for userspace.
+
+The current [[https://docs.sel4.systems/Rust.html][Rust on seL4 guidance]] is no longer supported as it
+depends on deprecated tools and outdated versions of Rust. Since then, Rust has come a long way
+and stabilized tooling and language features needed for easier cross-compilation project
+integration.
+
+Follow along to see how to integrate Rust code into the traditional seL4 build system and call Rust
+routines from C, while using stable recent versions of the Rust toolchain. This will target the
+64-bit ARMv8 architecture and will simulate on QEMU, targeting the ZCU102.
+
+* Install Rust and Tools
+You can install the rust tools with the =rustup.sh= tool:
+#+BEGIN_SRC sh
+curl https://sh.rustup.rs -sSf > rustup.sh
+chmod +x rustup.sh
+#+END_SRC
+Running the script will work for most Linux distributions that you would use for development. Some
+source-based Linux distributions may require a certain version that is installed and managed through
+the distributions' package manager so extra work may be required to get the latest stable Rust
+version.
+
+Install the cross compiling target:
+#+BEGIN_SRC sh
+rustup target add aarch64-unknown-linux-gnu
+#+END_SRC
+
+Install the rest of the seL4 tools as instructed in the seL4 docs:
+[[https://docs.sel4.systems/GettingStarted.html][LINK]]
+
+* Integrate Into seL4 Build System
+
+CMake/Ninja has been the build system generally used to build seL4 based systems since version
+10.0. The [[https://github.com/devolutions/cmakerust][=CMakeRust=]] project from Devolutions is used
+in this project in order to call rust and cargo commands from CMake and allow specifying targets for
+other CMake projects to use. At this time, a fork of =CMakeRust= is used, which allows specifying
+the target architecture from the CMake call.
+
+* Initialize the Project
+
+The manifest file for this project places the CMakeRust project under =tools=. The manifest is
+available at https://github.com/Jesse-Millwood/rust_sel4_manifest. The project can be initialized
+with:
+
+#+BEGIN_SRC
+repo init -u https://github.com/Jesse-Millwood/rust_sel4_manifest
+repo sync
+#+END_SRC
+
+The simple application can be found in =projects/sel4rustapp=.
+
+* Making Rust Code Callable from C
+In this example the rust application's directory structure looks like:
+#+BEGIN_SRC
+projects/sel4rustapp/apps/rust_app
+├── Cargo.toml
+├── CMakeLists.txt
+├── .gitignore
+└── src
+    └── lib.rs
+#+END_SRC
+
+The =Cargo.toml= indicates that the rust application will be a static library:
+#+BEGIN_SRC
+[lib]
+crate-type=['staticlib']
+#+END_SRC
+
+The =CMakeLists.txt= uses the =CMakeRust= project to indicate to the build system that this is a
+Cargo project and which architecture to target:
+#+BEGIN_SRC
+cargo_build(NAME rust_app TARGET_ARCH "aarch64-unknown-linux-gnu")
+#+END_SRC
+
+This application doesn't do anything seL4 specific and actually doesn't even use the Rust standard
+library or make seL4 system calls. In order to indicate not using the standard library, a
+=#![no_std]= macro is used. The simple =lib.rs= just contains:
+
+#+BEGIN_SRC rust :exports code
+#![no_std]
+
+use core::panic::PanicInfo;
+/// This function is called on panic.
+#[panic_handler]
+fn panic(_info: &PanicInfo) -> ! {
+    loop {}
+}
+
+#[no_mangle]
+pub extern "C" fn rust_routine(a:u32, b:u32)->u32{
+    let c = match a {
+        1 => 0,
+        _ => a
+    };
+    b+c
+}
+#+END_SRC
+
+The =#[no_mangle]= line tells the Rust compiler not to mangle the function name, this makes it
+easier to know which function to call when linked to the static library. The =pub exter "C"= prefix
+to the function declaration tells the Rust compiler that this will be a public function that is meant to
+take advantage of the C foreign function interface (FFI) features.
+
+This small example makes use of the [[https://doc.rust-lang.org/book/ch06-02-match.html][=match=
+operator]] and says if the =a= variable is 1, then the =c= variable will equal 0, otherwise it will
+equal =a=. Then it returns the sum of the =b= variable and the =c= variable.
+
+The =lib.rs= file also contains a definition of a panic handler. Because this is a non-standard
+library, a standard panic handler does not exist but the developer is required to include one for
+compilation. This panic handler and the following lines of the =Cargo.toml= were taken from the
+[[https://os.phil-opp.com/freestanding-rust-binary/][phil-opp blog post]] on creating a freestanding
+Rust binary:
+
+#+BEGIN_SRC
+[profile.dev]
+panic = "abort"
+
+[profile.release]
+panic = "abort"
+#+END_SRC
+
+In this case, the library will simply abort on a panic.
+
+* Calling Rust Code From C
+This application also contains a C rootserver application. The =CMakeLists.txt= handles the linking
+of the static Rust library by adding =rust_app= to the list of files handed to the
+=target_link_libraries= call.
+
+The following declaration is added to the top of the main C file of the root server:
+#+BEGIN_SRC c
+extern uint32_t rust_routine(uint32_t a, uint32_t b);
+#+END_SRC
+
+The following chunk is used in the rootserver main function to show simple passing data to the
+linked Rust library:
+#+BEGIN_SRC c
+    /* Make call to rust function */
+    uint32_t a = 10;
+    uint32_t b = 20;
+    uint32_t c = rust_routine(a, b);
+    printf("Rust Routine: %u + %u = %u\n", a, b, c);
+    a = 1;
+    c = rust_routine(a, b);
+    printf("Rust Routine: %u + %u = %u\n", a, b, c);
+#+END_SRC
+
+* Building
+
+Building the application is handled just as most of the other seL4 applications are:
+#+BEGIN_SRC
+mkdir build
+cd build
+../init-build.sh -DPLATFORM=zynqmp -DAARCH64=TRUE -DCROSS_COMPILER_PREFIX=$cross_prefix
+ninja
+#+END_SRC
+
+* Simulation
+
+QEMU is used for simulation here:
+#+BEGIN_SRC sh
+qemu-system-aarch64 -kernel images/root_app-image-arm-zynqmp -nographic -machine xlnx-zcu102 -m 4096M
+#+END_SRC
+
+The output should look like the following:
+#+BEGIN_SRC
+Bootstrapping kernel
+Booting all finished, dropped to user space
+Rust Routine: 10 + 20 = 30
+Warning: using printf before serial is set up. This only works as your
+printf is backed by seL4_Debug_PutChar()
+Rrintf is backed by seL4_D
+Rust Routine: 1 + 20 = 20
+Suspending current thread
+#+END_SRC
+
+* Next Steps
+
+In order to make a more fully featured Rust library, a number of changes need to be made to allow
+seL4 system calls and standard library calls from the application:
+- Use the =cbindgen= crate to generate headers for the Rust Library
+- Integrate PolySync's [[https://github.com/PolySync/libsel4-sys][libsel4-sys]] crate to make seL4 system calls
+- Integrate with muslc in order to get rid of =no_std=
+
+* Conclusion
+
+This post showed how to use the CMakeRust project to lay the ground work to easily integrate a
+baremetal Rust static library with a simple seL4 rootserver. There is still much to be done to
+enable developers to write in the languages that fit their use-cases in seL4 userspace
+applications. Rust is a natural fit for seL4 userspace applications because of the shared focus on
+safety and performance. DornerWorks is always looking for more ways to enable customers to bring
+their solutions to safe and secure platforms. Visit [[https://dornerworks.com/sel4-microkernel][our seL4 services page]] to see how we can enhance
+the security story of your projects or bring your favorite runtime (e.g. Ada) to seL4 userspace.
+
+
+* References
+  - https://www.rust-lang.org/tools/install
+  - https://rust-embedded.github.io/book/intro/no-std.html
+  - https://rust-embedded.github.io/book/intro/install.html
+  - https://rust-embedded.github.io/book/intro/tooling.html
+  - https://github.com/Devolutions/CMakeRust
+  - https://os.phil-opp.com/freestanding-rust-binary/
+
+* Footnotes
+
+[fn:1] https://visualstudiomagazine.com/articles/2019/07/18/microsoft-eyes-rust.aspx
