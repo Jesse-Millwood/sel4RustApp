@@ -38,7 +38,6 @@ target_link_libraries(
         sel4test
         sel4platsupport
         sel4muslcsys
-        sel4testsupport
         rust_app
 )
 target_compile_options(root_app PRIVATE -Werror -g)
