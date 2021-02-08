@@ -22,7 +22,7 @@ file(
 
 MakeCPIO(archive.o "$<TARGET_FILE:root_app>")
 
-add_executable(root_app EXCLUDE_FROM_ALL ${static} archive.o)
+add_executable(root_app EXCLUDE_FROM_ALL ${static})
 target_include_directories(root_app PRIVATE "include")
 target_link_libraries(
     root_app
